@@ -1,0 +1,32 @@
+# 构建产物
+dist/
+build/
+*.egg-info/
+src/*.egg-info/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+
+# Hypothesis 测试数据
+.hypothesis/
+
+# pytest
+.pytest_cache/
+
+# IDE
+.kiro/
+.vscode/
+.idea/
+
+# 生成的 PPT 文件
+*.pptx
+
+# .pen 文件（用户数据）
+*.pen
+
+# 敏感配置
+.pypirc

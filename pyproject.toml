@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pencil2pptx"
+version = "0.1.0"
+description = "将 Pencil .pen 文件转换为 PowerPoint .pptx，通过 Pencil MCP server 获取精确布局"
+requires-python = ">=3.10"
+license = "MIT"
+readme = "README.md"
+dependencies = [
+    "python-pptx>=0.6.21",
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+pencil2pptx = "pencil2pptx:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pencil2pptx"]
