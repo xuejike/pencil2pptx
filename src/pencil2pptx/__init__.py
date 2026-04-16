@@ -369,19 +369,19 @@ def _rect(slide, n: LayoutNode, ax: float, ay: float) -> None:
     l, t, w, h = _box(ax, ay, n.width, n.height)
     shape_type = MSO_SHAPE.ROUNDED_RECTANGLE if n.corner_radius > 0 else MSO_SHAPE.RECTANGLE
     s = slide.shapes.add_shape(shape_type, l, t, w, h)
-    _fill(s, n); _stroke(s, n)
+    _fill(s, n); _stroke(s, n); _no_shadow(s)
 
 
 def _ellipse(slide, n: LayoutNode, ax: float, ay: float) -> None:
     l, t, w, h = _box(ax, ay, n.width, n.height)
     s = slide.shapes.add_shape(MSO_SHAPE.OVAL, l, t, w, h)
-    _fill(s, n); _stroke(s, n)
+    _fill(s, n); _stroke(s, n); _no_shadow(s)
 
 
 def _line(slide, n: LayoutNode, ax: float, ay: float) -> None:
     l, t, w, h = _box(ax, ay, n.width, max(n.height, 0.5))
     s = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, l, t, w, h)
-    _fill(s, n); s.line.fill.background()
+    _fill(s, n); s.line.fill.background(); _no_shadow(s)
 
 
 def _frame(slide, n: LayoutNode, ax: float, ay: float, fs: float) -> None:
@@ -389,7 +389,7 @@ def _frame(slide, n: LayoutNode, ax: float, ay: float, fs: float) -> None:
         l, t, w, h = _box(ax, ay, n.width, n.height)
         shape_type = MSO_SHAPE.ROUNDED_RECTANGLE if n.corner_radius > 0 else MSO_SHAPE.RECTANGLE
         s = slide.shapes.add_shape(shape_type, l, t, w, h)
-        _fill(s, n); _stroke(s, n)
+        _fill(s, n); _stroke(s, n); _no_shadow(s)
     for c in n.children:
         _render(slide, c, ax, ay, fs)
 
@@ -402,6 +402,27 @@ def _icon(slide, n: LayoutNode, ax: float, ay: float) -> None:
 
 
 # --- 工具函数 ---
+
+def _no_shadow(shape):
+    """移除形状的默认阴影效果"""
+    from lxml import etree
+    sp = shape._element
+    nsmap = {
+        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+    }
+    # 方法1：将 style 中的 effectRef idx 设为 0（禁用主题效果引用）
+    for eref in sp.findall(".//a:effectRef", nsmap):
+        eref.set("idx", "0")
+    # 方法2：在 spPr 中添加空 effectLst 显式覆盖
+    spPr = sp.find(".//p:spPr", nsmap)
+    if spPr is None:
+        spPr = sp.find(".//{%s}spPr" % nsmap["a"])
+    if spPr is not None:
+        ns_a = nsmap["a"]
+        for el in spPr.findall("{%s}effectLst" % ns_a):
+            spPr.remove(el)
+        etree.SubElement(spPr, "{%s}effectLst" % ns_a)
 
 def _box(ax, ay, w, h):
     return Emu(int(ax * PX_TO_EMU)), Emu(int(ay * PX_TO_EMU)), Emu(int(w * PX_TO_EMU)), Emu(int(h * PX_TO_EMU))

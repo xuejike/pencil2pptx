@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pencil2pptx"
-version = "0.2.1"
+version = "0.2.2"
 description = "将 Pencil .pen 文件转换为 PowerPoint .pptx，通过 Pencil MCP server 获取精确布局"
 requires-python = ">=3.10"
 license = "MIT"
