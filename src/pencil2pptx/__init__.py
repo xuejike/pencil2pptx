@@ -77,6 +77,8 @@ class LayoutNode:
     icon_font_name: str = ""
     icon_font_family: str = ""
     icon_image_path: str = ""
+    context: str = ""  # 节点的 context 属性，如 "image"/"img" 表示整体导出为图片
+    context_image_path: str = ""  # context 为 image/img 时导出的图片路径
     children: list[LayoutNode] = field(default_factory=list)
     raw_props: dict = field(default_factory=dict)
 
@@ -114,8 +116,13 @@ class PencilMcpClient:
             "filePath": pen_file, "maxDepth": 0,
         })
 
+        # 按画布位置排序：先按 y（从上到下），再按 x（从左到右），保证导出顺序与 Pencil 视觉顺序一致
+        if isinstance(top_layout, list):
+            top_layout.sort(key=lambda f: (float(f.get("y", 0)), float(f.get("x", 0))))
+
         pages: list[PageData] = []
         all_icons: list[LayoutNode] = []
+        all_context_images: list[LayoutNode] = []  # context 标记为 image/img 的节点
 
         for frame in top_layout:
             pid = frame["id"]
@@ -143,9 +150,14 @@ class PencilMcpClient:
                 nodes=nodes,
             ))
             self._collect_icons(nodes, all_icons)
+            self._collect_context_images(nodes, all_context_images)
 
         if all_icons:
             await self._export_icons(session, pen_file, all_icons)
+
+        # 导出 context 为 image/img 的节点为图片
+        if all_context_images:
+            await self._export_context_images(session, pen_file, all_context_images)
 
         return pages
 
@@ -180,6 +192,34 @@ class PencilMcpClient:
                     id_map[base].icon_image_path = os.path.join(icon_dir, fname)
         except Exception as e:
             logger.warning("图标导出失败: %s", e)
+
+    # --- context 为 image/img 的节点收集与导出 ---
+
+    def _collect_context_images(self, nodes: list[LayoutNode], out: list[LayoutNode]) -> None:
+        """递归收集 context 为 image 或 img 的节点"""
+        for n in nodes:
+            if n.context.lower() in ("image", "img") and n.id:
+                out.append(n)
+            else:
+                # 只有非 context-image 节点才需要递归子节点
+                self._collect_context_images(n.children, out)
+
+    async def _export_context_images(self, session: ClientSession, pen_file: str, nodes: list[LayoutNode]) -> None:
+        """将 context 为 image/img 的节点导出为 PNG 图片"""
+        img_dir = tempfile.mkdtemp(prefix="pencil_ctx_img_")
+        try:
+            await session.call_tool("export_nodes", {
+                "filePath": pen_file, "nodeIds": [n.id for n in nodes],
+                "outputDir": img_dir, "format": "png", "scale": 2,
+            })
+            id_map = {n.id: n for n in nodes}
+            for fname in os.listdir(img_dir):
+                base = os.path.splitext(fname)[0]
+                if base in id_map:
+                    id_map[base].context_image_path = os.path.join(img_dir, fname)
+                    logger.info("context image 导出: %s → %s", base, fname)
+        except Exception as e:
+            logger.warning("context image 导出失败: %s", e)
 
     # --- 数据构建 ---
 
@@ -231,6 +271,7 @@ class PencilMcpClient:
             stroke_color=stroke_color, stroke_width=stroke_width,
             icon_font_name=p.get("iconFontName", ""),
             icon_font_family=p.get("iconFontFamily", ""),
+            context=str(p.get("context", "")),
             raw_props=p,
         )
         for cl in layout.get("children", []):
@@ -263,6 +304,13 @@ def render_pages(pages: list[PageData], output: Path, font_scale: float) -> None
 
 def _render(slide, n: LayoutNode, px: float, py: float, fs: float) -> None:
     ax, ay = px + n.x, py + n.y
+
+    # context 为 image/img 的节点直接作为图片插入，不递归渲染子节点
+    if n.context.lower() in ("image", "img") and n.context_image_path and os.path.exists(n.context_image_path):
+        l, t, w, h = _box(ax, ay, n.width, n.height)
+        slide.shapes.add_picture(n.context_image_path, l, t, w, h)
+        return
+
     t = n.node_type
     if t == "text":
         _text(slide, n, ax, ay, fs)
@@ -293,7 +341,10 @@ def _text(slide, n: LayoutNode, ax: float, ay: float, fs: float) -> None:
 
     align_map = {"center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT}
 
-    for i, line in enumerate(n.content.split("\n")):
+    # 统一换行符：将 \v (\x0B) 和 \r\n 都转为 \n，再按 \n 分段
+    text = n.content.replace("\v", "\n").replace("\r\n", "\n").replace("\r", "\n")
+
+    for i, line in enumerate(text.split("\n")):
         para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         para.alignment = align_map.get(n.text_align, PP_ALIGN.LEFT)
         run = para.add_run()
@@ -310,6 +361,7 @@ def _text(slide, n: LayoutNode, ax: float, ay: float, fs: float) -> None:
         if n.font_style == "italic":
             f.italic = True
         if n.line_height and n.line_height != 1.0:
+            # python-pptx 的 line_spacing 接受浮点数作为行距倍数
             para.line_spacing = n.line_height
 
 
