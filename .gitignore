@@ -30,3 +30,9 @@ __pycache__/
 
 # 敏感配置
 .pypirc
+
+# 调试和测试临时文件
+debug_*.json
+debug_*.py
+batch_font_test.py
+font_test_output/
