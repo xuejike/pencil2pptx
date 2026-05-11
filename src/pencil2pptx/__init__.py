@@ -574,6 +574,11 @@ def render_pages(pages: list[PageData], output: Path, font_scale: float) -> None
 def _render(slide, n: LayoutNode, px: float, py: float, fs: float) -> None:
     ax, ay = px + n.x, py + n.y
 
+    # context 为 tab/table 的节点识别为表格，用 PPT 原生表格渲染
+    if n.context.lower() in ("tab", "table"):
+        _table(slide, n, ax, ay, fs)
+        return
+
     # context 为 image/img 的节点直接作为图片插入，不递归渲染子节点
     if n.context.lower() in ("image", "img") and n.context_image_path and os.path.exists(n.context_image_path):
         l, t, w, h = _box(ax, ay, n.width, n.height)
@@ -624,14 +629,15 @@ def _text(slide, n: LayoutNode, ax: float, ay: float, fs: float) -> None:
     h = Emu(int(n.height * PX_TO_EMU)) if n.height > 0 else Emu(30 * PX_TO_EMU)
 
     tf = slide.shapes.add_textbox(left, top, w, h).text_frame
-    tf.word_wrap = True
     tf.auto_size = None
     tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Emu(0)
 
-    align_map = {"center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT}
-
-    # 统一换行符：将 \v (\x0B) 和 \r\n 都转为 \n，再按 \n 分段
+    # 判断是否需要换行：只有内容本身包含换行符时才启用 word_wrap
     text = n.content.replace("\v", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    has_newline = "\n" in text
+    tf.word_wrap = has_newline
+
+    align_map = {"center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT}
 
     for i, line in enumerate(text.split("\n")):
         para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
@@ -799,6 +805,144 @@ def _icon(slide, n: LayoutNode, ax: float, ay: float) -> None:
         return
     l, t, w, h = _box(ax, ay, n.width, n.height)
     slide.shapes.add_picture(n.icon_image_path, l, t, w, h)
+
+
+def _table(slide, n: LayoutNode, ax: float, ay: float, fs: float) -> None:
+    """将 context 为 tab/table 的 frame 渲染为 PPT 原生表格。
+
+    结构约定：
+    - 根 frame（vertical layout）的子节点为行（frame）
+    - 每行 frame 的子节点为单元格（text 节点）
+    - 第一行视为表头
+    """
+    from pptx.oxml.ns import qn
+
+    # 收集行数据
+    rows_data: list[list[LayoutNode]] = []
+    row_fills: list[str | None] = []
+    for child in n.children:
+        if child.node_type in ("frame", "group"):
+            cells = [c for c in child.children if c.node_type == "text"]
+            if cells:
+                rows_data.append(cells)
+                row_fills.append(child.fill)
+        elif child.node_type == "text":
+            # 单个 text 直接作为一行一列
+            rows_data.append([child])
+            row_fills.append(None)
+
+    if not rows_data:
+        # 没有可识别的行，回退到普通 frame 渲染
+        _frame(slide, n, ax, ay, fs)
+        return
+
+    num_rows = len(rows_data)
+    num_cols = max(len(row) for row in rows_data)
+
+    # 计算列宽：使用第一行（表头）各单元格的 width，不足的均分剩余
+    col_widths: list[float] = []
+    header_row = rows_data[0]
+    for i in range(num_cols):
+        if i < len(header_row) and header_row[i].width > 0:
+            col_widths.append(header_row[i].width)
+        else:
+            col_widths.append(n.width / num_cols if num_cols > 0 else 100)
+
+    # 计算行高：使用每行 frame 的 height，若无则用默认值
+    row_heights: list[float] = []
+    for i, child in enumerate(n.children):
+        if child.node_type in ("frame", "group") and child.height > 0:
+            row_heights.append(child.height)
+        else:
+            row_heights.append(40.0)  # 默认行高
+
+    # 确保 row_heights 数量与 rows_data 一致
+    while len(row_heights) < num_rows:
+        row_heights.append(40.0)
+
+    # 创建表格
+    left = Emu(int(ax * PX_TO_EMU))
+    top = Emu(int(ay * PX_TO_EMU))
+    width = Emu(int(sum(col_widths) * PX_TO_EMU))
+    height = Emu(int(sum(row_heights) * PX_TO_EMU))
+
+    table_shape = slide.shapes.add_table(num_rows, num_cols, left, top, width, height)
+    tbl = table_shape.table
+
+    # 设置列宽
+    for ci in range(num_cols):
+        tbl.columns[ci].width = Emu(int(col_widths[ci] * PX_TO_EMU))
+
+    # 设置行高
+    for ri in range(num_rows):
+        tbl.rows[ri].height = Emu(int(row_heights[ri] * PX_TO_EMU))
+
+    # 填充单元格
+    for ri, (cells, row_fill) in enumerate(zip(rows_data, row_fills)):
+        for ci in range(num_cols):
+            cell = tbl.cell(ri, ci)
+
+            # 设置单元格背景色
+            if row_fill and _is_valid_color(row_fill):
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = _rgb(row_fill)
+            else:
+                cell.fill.background()
+
+            # 设置单元格内边距（较小值，表格紧凑）
+            cell.margin_left = Emu(int(4 * PX_TO_EMU))
+            cell.margin_right = Emu(int(4 * PX_TO_EMU))
+            cell.margin_top = Emu(int(2 * PX_TO_EMU))
+            cell.margin_bottom = Emu(int(2 * PX_TO_EMU))
+
+            if ci >= len(cells):
+                # 空单元格
+                cell.text = ""
+                continue
+
+            cn = cells[ci]
+            # 设置文本
+            tf = cell.text_frame
+            tf.word_wrap = True
+
+            # 垂直居中
+            from lxml import etree
+            ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
+            tcPr = cell._tc.find(qn("a:tcPr"))
+            if tcPr is None:
+                tcPr = cell._tc.makeelement(qn("a:tcPr"), {})
+                cell._tc.insert(0, tcPr)
+            tcPr.set("anchor", "ctr")
+
+            text = (cn.content or "").replace("\v", "\n").replace("\r\n", "\n").replace("\r", "\n")
+            for li, line in enumerate(text.split("\n")):
+                para = tf.paragraphs[0] if li == 0 else tf.add_paragraph()
+                # 水平对齐
+                align_map = {"center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT}
+                para.alignment = align_map.get(cn.text_align, PP_ALIGN.LEFT)
+                run = para.add_run()
+                run.text = line
+                f = run.font
+                if cn.font_family:
+                    f.name = cn.font_family
+                if cn.font_size and cn.font_size > 0:
+                    f.size = Pt(cn.font_size * fs)
+                if cn.fill and isinstance(cn.fill, str) and _is_valid_color(cn.fill):
+                    f.color.rgb = _rgb(cn.fill)
+                if cn.font_weight in ("bold", "600", "700", "800", "900"):
+                    f.bold = True
+                if cn.font_style == "italic":
+                    f.italic = True
+
+    # 禁用表格默认样式（去掉条纹等）
+    tbl_pr = tbl._tbl.find(qn("a:tblPr"))
+    if tbl_pr is not None:
+        tbl_pr.set("bandRow", "0")
+        tbl_pr.set("bandCol", "0")
+        tbl_pr.set("firstRow", "0")
+        tbl_pr.set("lastRow", "0")
+        tbl_pr.set("firstCol", "0")
+        tbl_pr.set("lastCol", "0")
 
 
 # --- 工具函数 ---
